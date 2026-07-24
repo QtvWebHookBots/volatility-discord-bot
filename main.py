@@ -29,6 +29,75 @@ tickers = {
 HISTORY_PERIOD = "1y"
 ZSCORE_WINDOW = 20
 
+# Pour chaque métrique : ce qu'elle mesure concrètement, et ce que signifie
+# une hausse / une baisse en langage clair. Toutes ces métriques sont des
+# "jauges de peur" : une hausse = défavorable (plus de stress), une baisse
+# = favorable (détente). C'est ce qui permet le code couleur cohérent.
+METRIC_INFO = {
+    "VIX9D": {
+        "label": "Volatilité implicite à 9 jours",
+        "meaning_up": "les investisseurs anticipent une agitation imminente, dans les tout prochains jours (souvent lié à un événement daté : earnings, banque centrale, données macro)",
+        "meaning_down": "les tensions à très court terme se dissipent, aucun événement imminent ne semble inquiéter le marché",
+    },
+    "VIX": {
+        "label": "Volatilité implicite à 30 jours (référence)",
+        "meaning_up": "la prime de risque exigée par les investisseurs sur les actions US augmente sur l'horizon d'un mois",
+        "meaning_down": "les investisseurs exigent une prime de risque plus faible, signe de confiance retrouvée",
+    },
+    "VIX3M": {
+        "label": "Volatilité implicite à 3 mois",
+        "meaning_up": "l'inquiétude s'installe sur un horizon plus long, pas seulement à court terme",
+        "meaning_down": "les anticipations de volatilité à moyen terme se détendent",
+    },
+    "VVIX": {
+        "label": "Volatilité de la volatilité (incertitude sur le VIX lui-même)",
+        "meaning_up": "l'incertitude sur la trajectoire future du VIX augmente — les traders d'options anticipent des à-coups plutôt qu'une évolution régulière",
+        "meaning_down": "le marché des options anticipe une trajectoire de volatilité plus stable et prévisible",
+    },
+    "SKEW": {
+        "label": "Risque de queue / probabilité d'un krach perçue",
+        "meaning_up": "le marché est prêt à payer plus cher pour se couvrir contre un scénario extrême (krach), même si la volatilité \"normale\" ne le reflète pas encore",
+        "meaning_down": "la demande de protection contre un scénario extrême diminue",
+    },
+    "MOVE": {
+        "label": "Volatilité implicite obligataire (équivalent VIX pour les taux)",
+        "meaning_up": "le marché des taux devient plus nerveux, souvent lié à des doutes sur la politique monétaire ou l'inflation",
+        "meaning_down": "le marché obligataire se stabilise, signe de visibilité retrouvée sur les taux",
+    },
+}
+
+
+def get_change_badge(pct):
+    """Code couleur cohérent pour toutes les jauges de peur :
+    hausse = défavorable (rouge), baisse = favorable (vert).
+    Discord n'autorise pas la couleur de texte dans un embed,
+    donc on simule avec des pastilles + un mot explicite."""
+    if pct is None:
+        return "⚪", "n/a"
+    if pct <= -5:
+        return "🟢🟢", "forte détente"
+    elif pct <= -1:
+        return "🟢", "détente"
+    elif pct < 1:
+        return "⚪", "stable"
+    elif pct < 5:
+        return "🔴", "tension"
+    else:
+        return "🔴🔴", "forte tension"
+
+
+def get_directional_meaning(name, change_1d):
+    """Phrase explicite sur ce que signifie le mouvement du jour pour cette métrique précise."""
+    info = METRIC_INFO.get(name)
+    if not info:
+        return ""
+    if change_1d is None or abs(change_1d) < 0.5:
+        return "Mouvement quasi nul aujourd'hui, pas de signal directionnel."
+    elif change_1d > 0:
+        return info["meaning_up"].capitalize() + "."
+    else:
+        return info["meaning_down"].capitalize() + "."
+
 
 # ====================== INTERPRÉTATIONS ======================
 
@@ -218,30 +287,70 @@ def compute_risk_score(data):
 
 def generate_natural_summary(data, contango_ratio, cross_asset, risk_score, risk_label):
     vix = data.get("VIX")
+    vix9d = data.get("VIX9D")
     vvix = data.get("VVIX")
     skew = data.get("SKEW")
+    move = data.get("MOVE")
 
     parts = []
 
+    # --- Phrase d'ouverture : le verdict, immédiatement ---
     if risk_score is not None:
-        parts.append(f"Le score de risque composite est à **{risk_score}/100** ({risk_label}).")
+        parts.append(f"**Score de risque composite : {risk_score}/100 — {risk_label}.**")
 
+    # --- VIX : la métrique de référence, avec sa cause probable ---
     if vix:
-        parts.append(f"Le VIX est {vix['pct_interpret']}, avec une variation de {vix['change_1d']:+.2f}% sur la séance et {vix['change_5d']:+.2f}% sur 5 jours.")
+        badge, word = get_change_badge(vix["change_1d"])
+        direction = "monte" if vix["change_1d"] > 0 else ("baisse" if vix["change_1d"] < 0 else "stagne")
+        parts.append(
+            f"Le VIX {direction} de {vix['change_1d']:+.2f}% aujourd'hui et se situe {vix['pct_interpret']} "
+            f"({badge} {word} par rapport à hier) — sur 5 jours la tendance est de {vix['change_5d']:+.2f}%."
+        )
 
+    # --- VIX9D vs VIX : lecture explicite de l'urgence court terme ---
+    if vix9d and vix:
+        if vix9d["change_1d"] > vix["change_1d"] + 3:
+            parts.append(
+                f"⚠️ Le VIX9D (horizon 9 jours) bouge nettement plus vite que le VIX classique "
+                f"({vix9d['change_1d']:+.2f}% contre {vix['change_1d']:+.2f}%), ce qui signale une inquiétude "
+                f"concentrée sur un événement précis dans les jours qui viennent plutôt qu'un stress généralisé."
+            )
+
+    # --- VVIX / SKEW : le cas de la fausse tranquillité ---
     if vvix and skew:
-        # Cas particulier intéressant : VVIX bas + SKEW haut = marché calme en apparence mais risque de queue sous-jacent
         if vvix["percentile"] <= 30 and skew["percentile"] >= 70:
-            parts.append("⚠️ Signal notable : la volatilité de la volatilité (VVIX) est basse alors que le SKEW (risque de queue) est élevé — le marché semble calme en surface mais price un risque de choc soudain.")
+            parts.append(
+                "⚠️ **Signal de vigilance :** le VVIX (incertitude sur la volatilité elle-même) est bas "
+                f"({vvix['percentile']:.0f}e percentile) alors que le SKEW (risque de krach perçu) est élevé "
+                f"({skew['percentile']:.0f}e percentile) — traduction concrète : le marché ne s'attend pas à "
+                "de l'agitation générale, mais certains investisseurs achètent quand même une assurance contre "
+                "un scénario extrême. C'est souvent le signe d'une couverture ciblée plutôt que d'une panique large."
+            )
         elif vvix["percentile"] >= 70 and skew["percentile"] >= 70:
-            parts.append("Le VVIX et le SKEW sont tous les deux élevés — le marché anticipe à la fois de l'instabilité générale et un risque de mouvement extrême.")
+            parts.append(
+                "🔴 Le VVIX et le SKEW sont élevés simultanément — le marché anticipe à la fois plus d'instabilité "
+                "générale ET un risque de mouvement extrême. Combinaison rare, à prendre au sérieux."
+            )
+        elif vvix["percentile"] <= 30 and skew["percentile"] <= 30:
+            parts.append("🟢 VVIX et SKEW sont tous deux bas : ni instabilité anticipée, ni demande de protection contre un choc.")
 
+    # --- Croisement actions / taux ---
     if cross_asset:
         parts.append(cross_asset)
 
+    # --- Term structure ---
     if contango_ratio is not None:
         if contango_ratio < -3:
-            parts.append("La forte backwardation suggère une couverture court terme coûteuse — signe que les investisseurs paient cher pour se protéger dans l'immédiat.")
+            parts.append(
+                f"📉 Backwardation marquée ({contango_ratio:+.1f}%) : les investisseurs paient plus cher pour se "
+                "couvrir immédiatement que pour une couverture à 3 mois — traduction : le danger perçu est jugé "
+                "plus grand maintenant que plus tard."
+            )
+        elif contango_ratio > 15:
+            parts.append(
+                f"Le contango est très élevé ({contango_ratio:+.1f}%), ce qui est cohérent avec un marché serein "
+                "à court terme — mais une remontée brutale de cet écart serait à surveiller."
+            )
 
     return " ".join(parts)
 
@@ -298,14 +407,22 @@ def send_to_discord(data):
         d = data.get(name)
         if not d:
             continue
+
+        badge_1d, word_1d = get_change_badge(d["change_1d"])
+        badge_5d, word_5d = get_change_badge(d["change_5d"])
+        directional_meaning = get_directional_meaning(name, d["change_1d"])
+        label = METRIC_INFO.get(name, {}).get("label", name)
+
         value_line = (
-            f"`{d['value']}` | j: {d['change_1d']:+.2f}% | 5j: {d['change_5d']:+.2f}%\n"
-            f"Z(20j) `{d['zscore']}` · {d['pct_interpret']}"
+            f"**`{d['value']}`**\n"
+            f"{badge_1d} {word_1d} (j: {d['change_1d']:+.2f}%) · {badge_5d} {word_5d} (5j: {d['change_5d']:+.2f}%)\n"
+            f"📍 {d['pct_interpret']}\n"
+            f"_{directional_meaning}_"
         )
         fields.append({
-            "name": f"{name}",
+            "name": f"{name} — {label}",
             "value": value_line,
-            "inline": True
+            "inline": False
         })
 
     term_analysis, contango_ratio = analyze_vix_term_structure(data)
