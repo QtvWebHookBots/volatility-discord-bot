@@ -6,7 +6,7 @@ import pytz
 import os
 
 # ====================== CONFIGURATION ======================
-WEBHOOK_URL = os.getenv("https://discord.com/api/webhooks/1530197519886323914/7pCbpX3G8OVfI1u7L7O-Jf3AkvBCQPCQP_SnOjnJHPftM0hJyMH2cwYW5DczeuNV8f31")
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 if not WEBHOOK_URL:
     raise ValueError("La variable d'environnement DISCORD_WEBHOOK_URL est manquante")
