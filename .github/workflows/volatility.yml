@@ -2,10 +2,13 @@ name: Volatility Discord Bot
 
 on:
   schedule:
-    # Heures en UTC (Paris = UTC+2 en été)
-    - cron: '0 8 * * *'    # 10h00 Paris
-    - cron: '45 14 * * *'  # 16h45 Paris
-    - cron: '30 19 * * *'  # 21h30 Paris
+    # Heures en UTC (Paris été = UTC+2)
+    - cron: '0 6 * * *'    # 8h00 Paris
+    - cron: '0 10 * * *'   # 12h00 Paris
+    - cron: '0 12 * * *'   # 14h00 Paris
+    - cron: '0 15 * * *'   # 17h00 Paris
+    - cron: '0 19 * * *'   # 21h00 Paris
+
   workflow_dispatch:        # Permet de lancer manuellement
 
 jobs:
