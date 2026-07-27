@@ -1,5 +1,4 @@
 name: Volatility Discord Bot
-
 on:
   schedule:
     # Heures en UTC (Paris été = UTC+2)
@@ -8,16 +7,27 @@ on:
     - cron: '0 12 * * *'   # 14h00 Paris
     - cron: '0 15 * * *'   # 17h00 Paris
     - cron: '0 19 * * *'   # 21h00 Paris
-
   workflow_dispatch:        # Permet de lancer manuellement
+
+# Empêche deux runs de s'exécuter en même temps et de se marcher dessus
+# sur le fichier d'état (utile si un run traîne ou si un déclenchement manuel
+# tombe pile sur un cron).
+concurrency:
+  group: volatility-bot-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # nécessaire pour pouvoir commit/push le fichier d'état
 
 jobs:
   send-report:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # évite le detached HEAD, nécessaire pour push
+          fetch-depth: 1
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -33,3 +43,18 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
+
+      - name: Committer le nouvel état (vol_bot_state.json)
+        run: |
+          git config user.name "volatility-bot"
+          git config user.email "volatility-bot@users.noreply.github.com"
+          # On re-tire les derniers changements distants au cas où,
+          # puis on commit uniquement si le fichier a changé.
+          git add vol_bot_state.json
+          if git diff --cached --quiet; then
+            echo "Aucun changement d'état à committer."
+          else
+            git commit -m "chore: update volatility bot state [skip ci]"
+            git pull --rebase origin HEAD
+            git push
+          fi
