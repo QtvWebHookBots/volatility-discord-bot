@@ -13,7 +13,8 @@ if not WEBHOOK_URL:
 
 paris = pytz.timezone("Europe/Paris")
 
-# Fichier pour stocker l'état précédent (permet les alertes "changement de régime")
+# Fichier pour stocker l'état précédent (permet les alertes "changement de régime"
+# et le calcul "depuis le dernier envoi")
 STATE_FILE = "vol_bot_state.json"
 
 tickers = {
@@ -73,27 +74,29 @@ def get_change_badge(pct):
     Discord n'autorise pas la couleur de texte dans un embed,
     donc on simule avec des pastilles + un mot explicite."""
     if pct is None:
-        return "⚪", "n/a"
+        return "", "n/a"
     if pct <= -5:
-        return "🟢🟢", "forte détente"
+        return "🟢", "forte détente"
     elif pct <= -1:
         return "🟢", "détente"
     elif pct < 1:
         return "⚪", "stable"
     elif pct < 5:
-        return "🔴", "tension"
+        return "🟠", "tension"
     else:
-        return "🔴🔴", "forte tension"
+        return "🔴", "forte tension"
 
 
-def get_directional_meaning(name, change_1d):
-    """Phrase explicite sur ce que signifie le mouvement du jour pour cette métrique précise."""
+def get_directional_meaning(name, change):
+    """Phrase explicite sur ce que signifie le mouvement de cette métrique précise.
+    Générique : fonctionne aussi bien pour une variation 1j que pour une variation
+    'depuis le dernier envoi'."""
     info = METRIC_INFO.get(name)
     if not info:
         return ""
-    if change_1d is None or abs(change_1d) < 0.5:
-        return "Mouvement quasi nul aujourd'hui, pas de signal directionnel."
-    elif change_1d > 0:
+    if change is None or abs(change) < 0.5:
+        return "Mouvement quasi nul sur la période, pas de signal directionnel."
+    elif change > 0:
         return info["meaning_up"].capitalize() + "."
     else:
         return info["meaning_down"].capitalize() + "."
@@ -105,15 +108,15 @@ def zscore_interpret(z):
     if z is None:
         return "N/A"
     if z <= -2.0:
-        return "🚨 Extrêmement bas (récent)"
+        return "🟢 Extrêmement bas (récent)"
     elif z <= -1.0:
-        return "🔵 Bas (récent)"
+        return "🟢 Bas (récent)"
     elif z <= 0.5:
-        return "🟢 Normal (récent)"
+        return "⚪ Normal (récent)"
     elif z <= 1.5:
-        return "🟡 Au-dessus de la moyenne (récent)"
+        return "🟠 Au-dessus de la moyenne (récent)"
     elif z <= 2.5:
-        return "🟠 Élevé (récent)"
+        return "🔴 Élevé (récent)"
     else:
         return "🔴 Extrêmement élevé (récent)"
 
@@ -209,14 +212,14 @@ def analyze_vix_term_structure(data):
     elif v9 > v > v3:
         lines.append(f"📉 Courbe inversée (backwardation, {contango_ratio:+.1f}%) → stress court terme, le marché paie plus cher pour se couvrir maintenant que dans 3 mois")
     else:
-        lines.append(f"➡️ Courbe plate/irrégulière (écart 3M vs spot: {contango_ratio:+.1f}%)")
+        lines.append(f"➖ Courbe plate/irrégulière (écart 3M vs spot: {contango_ratio:+.1f}%)")
 
     if v > 30:
-        lines.append("🚨 Régime de panique (VIX > 30)")
+        lines.append("🔴 Régime de panique (VIX > 30)")
     elif v > 25 and v3 > v:
-        lines.append("⚠️ Régime de stress moyen terme")
+        lines.append("🟠 Régime de stress moyen terme")
     elif v < 15:
-        lines.append("😴 Régime de complaisance (VIX < 15)")
+        lines.append("🟢 Régime de complaisance (VIX < 15)")
 
     return "\n".join(lines), contango_ratio
 
@@ -246,7 +249,7 @@ def analyze_cross_asset(data):
     elif vix_low and move_low:
         return "🟢 Calme généralisé sur actions et taux"
     else:
-        return "➡️ Pas de signal croisé notable actions/taux"
+        return "⚪ Pas de signal croisé notable actions/taux"
 
 
 # ====================== SCORE DE RISQUE COMPOSITE ======================
@@ -270,11 +273,11 @@ def compute_risk_score(data):
     score = round(score / total_weight, 1)
 
     if score < 20:
-        label = "😴 Complaisance"
+        label = "🟢 Complaisance"
     elif score < 40:
         label = "🟢 Calme"
     elif score < 60:
-        label = "🟡 Neutre"
+        label = "⚪ Neutre"
     elif score < 80:
         label = "🟠 Tendu"
     else:
@@ -283,7 +286,7 @@ def compute_risk_score(data):
     return score, label
 
 
-# ====================== SYNTHÈSE EN LANGAGE NATUREL ======================
+# ====================== SYNTHÈSE EN LANGAGE NATUREL (24H) ======================
 
 def generate_natural_summary(data, contango_ratio, cross_asset, risk_score, risk_label):
     vix = data.get("VIX")
@@ -311,7 +314,7 @@ def generate_natural_summary(data, contango_ratio, cross_asset, risk_score, risk
     if vix9d and vix:
         if vix9d["change_1d"] > vix["change_1d"] + 3:
             parts.append(
-                f"⚠️ Le VIX9D (horizon 9 jours) bouge nettement plus vite que le VIX classique "
+                f"⚡ Le VIX9D (horizon 9 jours) bouge nettement plus vite que le VIX classique "
                 f"({vix9d['change_1d']:+.2f}% contre {vix['change_1d']:+.2f}%), ce qui signale une inquiétude "
                 f"concentrée sur un événement précis dans les jours qui viennent plutôt qu'un stress généralisé."
             )
@@ -355,7 +358,7 @@ def generate_natural_summary(data, contango_ratio, cross_asset, risk_score, risk
     return " ".join(parts)
 
 
-# ====================== PERSISTANCE D'ÉTAT (pour alertes) ======================
+# ====================== PERSISTANCE D'ÉTAT (pour alertes + comparaison inter-envoi) ======================
 
 def load_previous_state():
     try:
@@ -395,11 +398,162 @@ def check_alert(risk_score, previous_state):
     return None
 
 
+# ====================== COMPARAISON "DEPUIS LE DERNIER ENVOI" ======================
+
+def format_elapsed(hours):
+    """Formate une durée en heures en un texte lisible ('3h25', '1j 4h', ...)."""
+    if hours is None:
+        return "durée inconnue"
+    total_minutes = int(round(hours * 60))
+    days, rem = divmod(total_minutes, 24 * 60)
+    hrs, mins = divmod(rem, 60)
+    if days > 0:
+        return f"{days}j {hrs}h"
+    elif hrs > 0:
+        return f"{hrs}h{mins:02d}"
+    else:
+        return f"{mins} min"
+
+
+def compute_since_last(data, previous_state):
+    """Calcule, pour chaque métrique, la variation depuis la dernière valeur
+    sauvegardée (donc depuis le dernier message effectivement envoyé par le bot,
+    quel que soit le temps réellement écoulé), ainsi que le score de risque
+    précédent et la durée écoulée."""
+    prev_values = previous_state.get("values")
+    prev_timestamp = previous_state.get("timestamp")
+    if not prev_values or not prev_timestamp:
+        return None
+
+    try:
+        prev_dt = datetime.fromisoformat(prev_timestamp)
+    except ValueError:
+        return None
+
+    now = datetime.now(paris)
+    hours_elapsed = (now - prev_dt).total_seconds() / 3600
+
+    since_last = {}
+    for name, d in data.items():
+        if not d:
+            continue
+        prev_val = prev_values.get(name)
+        if prev_val is None or prev_val == 0:
+            continue
+        current_val = d["value"]
+        change_since = round((current_val - prev_val) / prev_val * 100, 2)
+        since_last[name] = {
+            "value": current_val,
+            "prev_value": prev_val,
+            "change_since": change_since,
+        }
+
+    return {
+        "hours_elapsed": hours_elapsed,
+        "metrics": since_last,
+        "prev_risk_score": previous_state.get("risk_score"),
+    }
+
+
+def generate_since_last_summary(data, since_last, risk_score, risk_label):
+    """Synthèse équivalente à generate_natural_summary, mais calculée sur la
+    variation réelle depuis le dernier message envoyé, pas sur un pas de 24h fixe."""
+    metrics = since_last["metrics"]
+    hours = since_last["hours_elapsed"]
+    prev_score = since_last["prev_risk_score"]
+
+    parts = [f"Comparaison avec le dernier envoi, il y a **{format_elapsed(hours)}**."]
+
+    if risk_score is not None and prev_score is not None:
+        delta_score = round(risk_score - prev_score, 1)
+        arrow = "📈" if delta_score > 0 else ("📉" if delta_score < 0 else "➖")
+        parts.append(
+            f"{arrow} Score de risque composite : {prev_score} → **{risk_score}/100** "
+            f"({delta_score:+.1f} pts) — {risk_label}."
+        )
+    elif risk_score is not None:
+        parts.append(f"**Score de risque composite actuel : {risk_score}/100 — {risk_label}.**")
+
+    vix = metrics.get("VIX")
+    if vix:
+        badge, word = get_change_badge(vix["change_since"])
+        direction = "monté" if vix["change_since"] > 0 else ("baissé" if vix["change_since"] < 0 else "stagné")
+        parts.append(
+            f"Le VIX a {direction} de {vix['change_since']:+.2f}% depuis le dernier envoi "
+            f"({vix['prev_value']} → {vix['value']}) — {badge} {word}."
+        )
+
+    vix9d = metrics.get("VIX9D")
+    if vix9d and vix:
+        if vix9d["change_since"] > vix["change_since"] + 3:
+            parts.append(
+                "⚡ Le VIX9D a accéléré nettement plus vite que le VIX depuis le dernier message, "
+                "signe d'une inquiétude concentrée sur un événement proche plutôt qu'un stress généralisé."
+            )
+
+    vvix = metrics.get("VVIX")
+    skew = metrics.get("SKEW")
+    if vvix and skew:
+        if vvix["change_since"] <= -3 and skew["change_since"] >= 3:
+            parts.append(
+                "⚠️ Depuis le dernier envoi, le VVIX s'est détendu pendant que le SKEW a progressé — "
+                "la couverture contre un scénario extrême augmente sans hausse de la nervosité générale."
+            )
+        elif vvix["change_since"] >= 3 and skew["change_since"] >= 3:
+            parts.append(
+                "🔴 VVIX et SKEW ont tous deux progressé depuis le dernier envoi — instabilité anticipée "
+                "et risque de mouvement extrême augmentent en même temps."
+            )
+
+    move = metrics.get("MOVE")
+    if vix and move:
+        vix_moved = abs(vix["change_since"]) >= 3
+        move_moved = abs(move["change_since"]) >= 3
+        if vix_moved and move_moved and (vix["change_since"] > 0) == (move["change_since"] > 0):
+            direction_word = "tendu" if vix["change_since"] > 0 else "détendu"
+            parts.append(f"🔴 Actions et taux se sont {direction_word}s de concert depuis le dernier envoi — mouvement cohérent, donc plus significatif.")
+        elif move_moved and not vix_moved:
+            parts.append("🟠 Le marché des taux a bougé sensiblement depuis le dernier envoi alors que les actions restent stables — à surveiller.")
+
+    other_moves = []
+    for name in ["VIX3M"]:
+        m = metrics.get(name)
+        if m and abs(m["change_since"]) >= 3:
+            meaning = get_directional_meaning(name, m["change_since"])
+            other_moves.append(f"**{name}** : {m['change_since']:+.2f}% depuis le dernier envoi — {meaning}")
+    if other_moves:
+        parts.append(" ".join(other_moves))
+
+    return " ".join(parts)
+
+
+def build_since_last_fields(since_last):
+    fields = []
+    order = ["VIX9D", "VIX", "VIX3M", "VVIX", "SKEW", "MOVE"]
+    metrics = since_last["metrics"]
+    for name in order:
+        m = metrics.get(name)
+        if not m:
+            continue
+        badge, word = get_change_badge(m["change_since"])
+        directional_meaning = get_directional_meaning(name, m["change_since"])
+        label = METRIC_INFO.get(name, {}).get("label", name)
+        value_line = (
+            f"**`{m['prev_value']}` → `{m['value']}`**\n"
+            f"{badge} {word} ({m['change_since']:+.2f}% depuis le dernier envoi)\n"
+            f"_{directional_meaning}_"
+        )
+        fields.append({
+            "name": f"{name} — {label}",
+            "value": value_line,
+            "inline": False
+        })
+    return fields
+
+
 # ====================== ENVOI DISCORD ======================
 
-def send_to_discord(data):
-    now = datetime.now(paris).strftime("%d/%m/%Y à %H:%M")
-
+def build_24h_embed(data, risk_score, risk_label, contango_ratio, term_analysis, cross_asset, now_str):
     fields = []
     order = ["VIX9D", "VIX", "VIX3M", "VVIX", "SKEW", "MOVE"]
 
@@ -416,7 +570,7 @@ def send_to_discord(data):
         value_line = (
             f"**`{d['value']}`**\n"
             f"{badge_1d} {word_1d} (j: {d['change_1d']:+.2f}%) · {badge_5d} {word_5d} (5j: {d['change_5d']:+.2f}%)\n"
-            f"📍 {d['pct_interpret']}\n"
+            f"📊 {d['pct_interpret']}\n"
             f"_{directional_meaning}_"
         )
         fields.append({
@@ -425,43 +579,71 @@ def send_to_discord(data):
             "inline": False
         })
 
-    term_analysis, contango_ratio = analyze_vix_term_structure(data)
-    cross_asset = analyze_cross_asset(data)
-    risk_score, risk_label = compute_risk_score(data)
     summary = generate_natural_summary(data, contango_ratio, cross_asset, risk_score, risk_label)
+    description = f"**{summary}**\n\n**Term Structure VIX :**\n{term_analysis}"
 
-    previous_state = load_previous_state()
-    alert = check_alert(risk_score, previous_state)
-
-    # Couleur de l'embed dynamique selon le score de risque
     if risk_score is None:
         color = 3447003
     elif risk_score < 40:
-        color = 3066993   # vert
+        color = 3066993
     elif risk_score < 70:
-        color = 15844367  # orange/jaune
+        color = 15844367
     else:
-        color = 15158332  # rouge
+        color = 15158332
 
-    description = f"**{summary}**\n\n**Term Structure VIX :**\n{term_analysis}"
-
-    embed = {
-        "title": f"📊 Volatility Intelligence Report — {now}",
+    return {
+        "title": f"📊 Volatility Intelligence Report — {now_str}",
         "color": color,
         "fields": fields,
         "description": description,
         "footer": {"text": "Yahoo Finance • Z-score 20j = réactivité court terme • Percentile 1an = contexte annuel"}
+    }, color
+
+
+def build_since_last_embed(data, since_last, risk_score, risk_label, now_str, color):
+    summary = generate_since_last_summary(data, since_last, risk_score, risk_label)
+    fields = build_since_last_fields(since_last)
+    return {
+        "title": f"⏱️ Évolution depuis le dernier envoi — {now_str}",
+        "color": color,
+        "fields": fields,
+        "description": f"**{summary}**",
+        "footer": {"text": f"Comparaison avec l'état sauvegardé lors du dernier message du bot"}
     }
 
+
+def post_to_discord(content, embed, username_suffix=""):
     payload = {
-        "username": "Volatilité Bot",
+        "username": f"Volatilité Bot{username_suffix}",
         "avatar_url": "https://cdn-icons-png.flaticon.com/512/2920/2920277.png",
-        "content": alert if alert else None,
+        "content": content,
         "embeds": [embed]
     }
-
     response = requests.post(WEBHOOK_URL, json=payload)
-    print("Message envoyé" if response.status_code in [200, 204] else f"Erreur {response.status_code}")
+    print("Message envoyé" if response.status_code in [200, 204] else f"Erreur {response.status_code}: {response.text}")
+
+
+def send_to_discord(data):
+    now_str = datetime.now(paris).strftime("%d/%m/%Y à %H:%M")
+
+    term_analysis, contango_ratio = analyze_vix_term_structure(data)
+    cross_asset = analyze_cross_asset(data)
+    risk_score, risk_label = compute_risk_score(data)
+
+    previous_state = load_previous_state()
+    alert = check_alert(risk_score, previous_state)
+    since_last = compute_since_last(data, previous_state)
+
+    # --- Message 1 : vue habituelle sur 24h ---
+    embed_24h, color = build_24h_embed(data, risk_score, risk_label, contango_ratio, term_analysis, cross_asset, now_str)
+    post_to_discord(alert if alert else None, embed_24h)
+
+    # --- Message 2 : évolution depuis le dernier envoi effectif du bot ---
+    if since_last is not None and since_last["metrics"]:
+        embed_since_last = build_since_last_embed(data, since_last, risk_score, risk_label, now_str, color)
+        post_to_discord(None, embed_since_last)
+    else:
+        print("Pas d'état précédent exploitable : message 'depuis le dernier envoi' ignoré (premier envoi ?).")
 
     save_state(risk_score, data)
 
